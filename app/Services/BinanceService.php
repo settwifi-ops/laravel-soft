@@ -8,7 +8,7 @@ use Exception;
 
 class BinanceService
 {
-    private $baseUrl = 'https://api.binance.com/api/v3';
+    private $baseUrl = 'https://fapi.binance.com/fapi/v1';
     
     /**
      * Test connection to Binance API - Improved version

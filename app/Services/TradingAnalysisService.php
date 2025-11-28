@@ -12,10 +12,10 @@ class TradingAnalysisService
     private $binanceService;
     private $openAIService;
 
-    public function __construct()
+    public function __construct(BinanceService $binanceService, OpenAIService $openAIService)
     {
-        $this->binanceService = new BinanceService();
-        $this->openAIService = new OpenAIService();
+        $this->binanceService = $binanceService;  // ✅ BENAR - Dependency Injection
+        $this->openAIService = $openAIService;    // ✅ BENAR - Dependency Injection
     }
 
     /**

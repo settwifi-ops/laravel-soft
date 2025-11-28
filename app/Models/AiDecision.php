@@ -1,5 +1,5 @@
 <?php
-// app/Models/AiDecision.php
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,16 +16,19 @@ class AiDecision extends Model
         'price',
         'explanation',
         'market_data',
+        'decision_time',
         'executed',
-        'decision_time'
+        'risk_adjustment', // ✅ TAMBAHKIN INI
+        'volume_adjustment', // ✅ DAN INI
+        'market_context' // ✅ DAN INI JUGA
     ];
 
     protected $casts = [
-        'confidence' => 'decimal:2',
-        'price' => 'decimal:8',
         'market_data' => 'array',
+        'decision_time' => 'datetime',
         'executed' => 'boolean',
-        'decision_time' => 'datetime'
+        'risk_adjustment' => 'decimal:2',
+        'market_context' => 'array'
     ];
 
     // ✅ TAMBAHKAN RELATIONSHIP KE SIGNAL

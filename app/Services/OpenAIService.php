@@ -17,7 +17,7 @@ class OpenAIService
         
         if (!$this->apiKey) {
             throw new Exception('OPENAI_API_KEY not found in .env file');
-        }
+       }
     }
 
     /**

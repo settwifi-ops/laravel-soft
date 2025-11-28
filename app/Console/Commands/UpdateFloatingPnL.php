@@ -14,7 +14,7 @@ class UpdateFloatingPnL extends Command
     {
         $this->info('📊 Updating floating PNL for all open positions...');
         
-        $executionService->updateFloatingPnL();
+        $executionService->updateAllFloatingPnL();
         
         $this->info('✅ Floating PNL updated successfully!');
         return Command::SUCCESS;

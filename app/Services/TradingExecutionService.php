@@ -9,12 +9,14 @@ use App\Models\TradeHistory;
 use App\Models\UserPortfolio;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use App\Models\RegimeSummary;     // ✅ TAMBAH BARIS INI
 use Carbon\Carbon;
 use App\Events\TradingExecutedEvent;
 
 class TradingExecutionService
 {
     private $binanceService;
+    private $currentDecision; 
 
     public function __construct(BinanceService $binanceService)
     {
@@ -26,8 +28,11 @@ class TradingExecutionService
      */
     public function executeDecision(AiDecision $decision)
     {
+        $this->currentDecision = $decision; // ✅ TAMBAH BARIS INI
+        
         if ($decision->executed) {
             Log::info("Decision {$decision->id} already executed");
+            $this->currentDecision = null; // ✅ TAMBAH BARIS INI (cleanup)
             return;
         }
 
@@ -111,7 +116,8 @@ class TradingExecutionService
         }
 
         Log::info("✅ Successfully executed for {$successCount}/{$enabledUsers->count()} users");
-    }  
+        $this->currentDecision = null; // ✅ TAMBAH BARIS INI (cleanup)
+    }   
     private function notifyUserTradeExecution($userId, $symbol, $action, $message)
     {
          // ✅ DEBUG: LOG SEBELUM EVENT
@@ -832,14 +838,21 @@ class TradingExecutionService
     {
         $baseAmount = $portfolio->calculateRiskAmount($confidence);
         
-        // Get regime data for dynamic adjustment
+        // ✅ NEW: Apply market risk adjustment jika ada
+        $marketAdjustment = 1.0;
+        if (isset($this->currentDecision) && isset($this->currentDecision->risk_adjustment)) {
+            $marketAdjustment = $this->currentDecision->risk_adjustment;
+            Log::info("🎯 Applying market risk adjustment: {$marketAdjustment}");
+        }
+        
+        // Get regime data untuk additional adjustment
         $regime = \App\Models\MarketRegime::where('symbol', $symbol)
             ->orderBy('timestamp', 'desc')
             ->first();
             
         if (!$regime) {
             Log::warning("⚠️ No regime data for {$symbol} - using base risk amount");
-            return $baseAmount;
+            return $baseAmount * $marketAdjustment; // ✅ Apply market adjustment
         }
 
         $regimeType = $regime->regime;
@@ -901,6 +914,9 @@ class TradingExecutionService
         // Apply bounds (min 10%, max 200% of base amount)
         $finalMultiplier = max(0.1, min(2.0, $finalMultiplier));
         
+        // ✅ APPLY MARKET ADJUSTMENT
+        $finalMultiplier = $finalMultiplier * $marketAdjustment;
+        
         $finalAmount = $baseAmount * $finalMultiplier;
 
         Log::info("📊 Position Sizing Calculation:", [
@@ -908,6 +924,7 @@ class TradingExecutionService
             'base_amount' => $baseAmount,
             'final_amount' => $finalAmount,
             'multiplier' => $finalMultiplier,
+            'market_adjustment' => $marketAdjustment,  // ✅ TAMBAH INI
             'breakdown' => [
                 'regime' => $regimeMultiplier,
                 'confidence' => $confidenceMultiplier, 
@@ -919,7 +936,6 @@ class TradingExecutionService
 
         return $finalAmount;
     }
-
     /**
      * Check dan execute SL/TP secara real-time
      */
@@ -1129,6 +1145,50 @@ class TradingExecutionService
      */
     private function validateWithRegime(AiDecision $decision)
     {
+        // ✅ NEW: MARKET REGIME SUMMARY VALIDATION (Primary)
+        $marketValidation = $this->validateWithMarketRegimeSummary($decision);
+        
+        if (!$marketValidation['valid']) {
+            return $marketValidation;
+        }
+
+        // ✅ Fallback ke symbol-specific validation
+        return $this->validateWithSymbolRegime($decision);
+    }
+    /**
+     * Enhanced validation using Market Regime Summary
+     */
+    private function validateWithMarketRegimeSummary(AiDecision $decision)
+    {
+        // Get latest market summary
+        $marketSummary = RegimeSummary::today()->first();
+        
+        if (!$marketSummary) {
+            Log::debug("No market summary available - using symbol-specific regime");
+            return $this->validateWithSymbolRegime($decision); // Fallback ke old logic
+        }
+
+        $marketRegime = $marketSummary->market_sentiment; // 'bullish', 'bearish', 'neutral'
+        $marketHealth = $marketSummary->market_health_score; // 0-100
+        $trendStrength = $marketSummary->trend_strength; // 0-100
+        $regimePercentages = $marketSummary->regime_percentages; // bull%, bear%, etc.
+
+        Log::info("🏛️  Market Summary: {$marketRegime} (Health: {$marketHealth}, Trend: {$trendStrength}%)");
+
+        return $this->validateWithMarketContext(
+            $decision, 
+            $marketRegime, 
+            $marketHealth, 
+            $trendStrength,
+            $regimePercentages
+        );
+    }
+
+    /**
+     * Original symbol-specific regime validation (rename dari validateWithRegime)
+     */
+    private function validateWithSymbolRegime(AiDecision $decision)
+    {
         $symbol = $decision->symbol;
         
         // Get latest regime data
@@ -1146,7 +1206,7 @@ class TradingExecutionService
         $regimeConfidence = $regime->regime_confidence;
         $anomalyScore = $regime->anomaly_score;
         
-        Log::info("🔍 Regime Validation for {$symbol}: {$regimeType} ({$regimeConfidence}%), Anomaly: {$anomalyScore}");
+        Log::info("🔍 Symbol Regime for {$symbol}: {$regimeType} ({$regimeConfidence}%), Anomaly: {$anomalyScore}");
 
         // 1. ANOMALY SAFETY CHECK
         if ($anomalyScore > 0.7) {
@@ -1195,8 +1255,93 @@ class TradingExecutionService
 
         return [
             'valid' => true, 
-            'reason' => "Regime validation passed - {$regimeType} regime, " . round($regimeConfidence * 100, 1) . "% confidence"
+            'reason' => "Symbol regime passed - {$regimeType} regime, " . round($regimeConfidence * 100, 1) . "% confidence"
         ];
+    }
+
+    /**
+     * Smart validation dengan market context
+     */
+    private function validateWithMarketContext($decision, $marketRegime, $marketHealth, $trendStrength, $regimePercentages)
+    {
+        $action = $decision->action;
+        $symbol = $decision->symbol;
+
+        // ✅ MARKET HEALTH CHECK
+        if ($marketHealth < 30) {
+            return ['valid' => false, 'reason' => "Poor market health: {$marketHealth}"];
+        }
+
+        // ✅ TREND STRENGTH ADJUSTMENT
+        $riskAdjustment = 1.0; // Default
+        if ($trendStrength < 40) {
+            // Weak trend - reduce position size
+            $riskAdjustment = 0.7;
+            Log::info("📉 Weak trend strength: {$trendStrength}% - reducing position size");
+        }
+
+        // ✅ MARKET REGIME ALIGNMENT
+        $alignmentScore = $this->calculateAlignmentScore($action, $marketRegime, $regimePercentages);
+        
+        if ($alignmentScore < 0.3) {
+            return [
+                'valid' => false, 
+                'reason' => "Poor alignment with market regime: {$marketRegime}"
+            ];
+        }
+
+        // ✅ VOLATILITY CHECK
+        if ($this->isHighVolatilityMarket($regimePercentages)) {
+            Log::warning("🌪️  High volatility market - extra caution for {$symbol}");
+            $riskAdjustment = min($riskAdjustment, 0.6);
+        }
+
+        // ✅ Store risk adjustment untuk digunakan di calculateRiskAmount
+        if (isset($this->currentDecision)) {
+            $this->currentDecision->risk_adjustment = $riskAdjustment;
+        }
+
+        return [
+            'valid' => true, 
+            'reason' => "Market validation passed: {$marketRegime} regime",
+            'risk_adjustment' => $riskAdjustment
+        ];
+    }
+
+    /**
+     * Calculate alignment score between trade action and market regime
+     */
+    private function calculateAlignmentScore($action, $marketRegime, $regimePercentages)
+    {
+        $bullRatio = $regimePercentages['bull'] ?? 0;
+        $bearRatio = $regimePercentages['bear'] ?? 0;
+        
+        // Base alignment
+        $alignment = 0.5; // Neutral start
+        
+        // Action alignment dengan market sentiment
+        if ($marketRegime === 'bullish' || $marketRegime === 'extremely_bullish') {
+            $alignment = $action === 'BUY' ? 0.8 : 0.3;
+        } elseif ($marketRegime === 'bearish' || $marketRegime === 'extremely_bearish') {
+            $alignment = $action === 'SELL' ? 0.8 : 0.3;
+        } else { // neutral
+            $alignment = 0.6; // Slightly favor both in neutral
+        }
+        
+        // Adjust berdasarkan regime distribution
+        if ($bullRatio > 60 && $action === 'BUY') $alignment += 0.2;
+        if ($bearRatio > 60 && $action === 'SELL') $alignment += 0.2;
+        
+        return min(1.0, max(0.0, $alignment));
+    }
+
+    /**
+     * Check if market is high volatility
+     */
+    private function isHighVolatilityMarket($regimePercentages)
+    {
+        $volatileRatio = $regimePercentages['volatile'] ?? 0;
+        return $volatileRatio > 30; // Jika >30% symbols volatile
     }
     /**
      * Enhanced error notification dengan Pusher

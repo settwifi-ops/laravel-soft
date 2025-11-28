@@ -18,10 +18,24 @@ class UpdateSignalAnalysisCommand extends Command
                             {--all : Process all signals ignoring conditions}';
     
     protected $description = 'Analyze signals with AI when appearance_count increases';
+    protected $tradingAnalysisService;
+
+    // ✅ GUNAKAN DEPENDENCY INJECTION
+    public function __construct(TradingAnalysisService $tradingAnalysisService)
+    {
+        parent::__construct();
+        $this->tradingAnalysisService = $tradingAnalysisService;
+    }
 
     public function handle()
     {
-        // Test OpenAI connection jika option dipilih
+
+        $limit = $this->option('limit');
+        
+        $this->info("Starting AI analysis for {$limit} signals...");
+        
+        // ✅ SEKARANG BISA PAKAI SERVICE DENGAN BENAR
+        $signals = $this->tradingAnalysisService->getSignalsNeedingUpdate($limit);        // Test OpenAI connection jika option dipilih
         if ($this->option('test')) {
             $this->testOpenAIConnection();
             return;
